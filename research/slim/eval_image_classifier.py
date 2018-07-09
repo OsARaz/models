@@ -24,7 +24,10 @@ import tensorflow as tf
 from datasets import dataset_factory
 from nets import nets_factory
 from preprocessing import preprocessing_factory
+import checkpoint_utils_slim as c_utils
+import os
 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 slim = tf.contrib.slim
 
 tf.app.flags.DEFINE_integer(
@@ -112,7 +115,7 @@ def main(_):
         shuffle=False,
         common_queue_capacity=2 * FLAGS.batch_size,
         common_queue_min=FLAGS.batch_size)
-    [image, label] = provider.get(['image', 'label'])
+    [image, label] = provider.get(['image', 'mask'])
     label -= FLAGS.labels_offset
 
     #####################################
@@ -124,8 +127,9 @@ def main(_):
         is_training=False)
 
     eval_image_size = FLAGS.eval_image_size or network_fn.default_image_size
+    kwargs = {"mask": label}
 
-    image = image_preprocessing_fn(image, eval_image_size, eval_image_size)
+    image, label = image_preprocessing_fn(image, eval_image_size, eval_image_size, **kwargs)
 
     images, labels = tf.train.batch(
         [image, label],
@@ -147,14 +151,17 @@ def main(_):
     else:
       variables_to_restore = slim.get_variables_to_restore()
 
-    predictions = tf.argmax(logits, 1)
+    predictions = tf.argmax(logits, -1)
     labels = tf.squeeze(labels)
-
+    tf.summary.image('images', images)
+    tf.summary.image('labels', tf.expand_dims(labels, axis=-1) * 255 / (dataset.num_classes - FLAGS.labels_offset))
+    # logits = end_points['output']
+    out_mask = tf.expand_dims(predictions * 255 / (dataset.num_classes - FLAGS.labels_offset),
+                              axis=-1)
+    tf.summary.image('out_mask', out_mask)
     # Define the metrics:
     names_to_values, names_to_updates = slim.metrics.aggregate_metric_map({
-        'Accuracy': slim.metrics.streaming_accuracy(predictions, labels),
-        'Recall_5': slim.metrics.streaming_recall_at_k(
-            logits, labels, 5),
+        'mean_IOU': slim.metrics.streaming_mean_iou(predictions, labels, dataset.num_classes),
     })
 
     # Print the summaries to screen.
@@ -171,21 +178,20 @@ def main(_):
       # This ensures that we make a single pass over all of the data.
       num_batches = math.ceil(dataset.num_samples / float(FLAGS.batch_size))
 
-    if tf.gfile.IsDirectory(FLAGS.checkpoint_path):
-      checkpoint_path = tf.train.latest_checkpoint(FLAGS.checkpoint_path)
-    else:
-      checkpoint_path = FLAGS.checkpoint_path
 
-    tf.logging.info('Evaluating %s' % checkpoint_path)
-
-    slim.evaluation.evaluate_once(
-        master=FLAGS.master,
-        checkpoint_path=checkpoint_path,
-        logdir=FLAGS.eval_dir,
-        num_evals=num_batches,
-        eval_op=list(names_to_updates.values()),
-        variables_to_restore=variables_to_restore)
-
+    tf.logging.info('Evaluating %s' % FLAGS.checkpoint_path)
+    session_config = tf.ConfigProto()
+    session_config.gpu_options.allow_growth = True
+    checkpoint_list = c_utils.get_checkpoint_list(FLAGS.checkpoint_path)
+    for checkpoint in checkpoint_list:
+        slim.evaluation.evaluate_once(
+            master=FLAGS.master,
+            checkpoint_path=checkpoint,
+            logdir=FLAGS.eval_dir,
+            num_evals=num_batches,
+            eval_op=list(names_to_updates.values()),
+            variables_to_restore=variables_to_restore,
+            session_config=session_config)
 
 if __name__ == '__main__':
   tf.app.run()

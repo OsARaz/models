@@ -78,6 +78,10 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_integer(
     'task', 0, 'Task id of the replica running the training.')
 
+
+tf.app.flags.DEFINE_float(
+    'keep_checkpoint_every_n_hours', 0.25, 'keeps checkpoints for evaluation later')
+
 ######################
 # Optimization Flags #
 ######################
@@ -580,6 +584,7 @@ def main(_):
 
         # Merge all summaries together.
         summary_op = tf.summary.merge(list(summaries), name='summary_op')
+        saver = tf.train.Saver(keep_checkpoint_every_n_hours=FLAGS.keep_checkpoint_every_n_hours)
 
         ###########################
         # Kicks off the training. #
@@ -595,6 +600,7 @@ def main(_):
             log_every_n_steps=FLAGS.log_every_n_steps,
             save_summaries_secs=FLAGS.save_summaries_secs,
             save_interval_secs=FLAGS.save_interval_secs,
+            saver=saver,
             sync_optimizer=optimizer if FLAGS.sync_replicas else None)
 
 
